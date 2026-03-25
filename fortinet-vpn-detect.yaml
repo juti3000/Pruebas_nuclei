@@ -1,0 +1,65 @@
+id: fortinet-vpn-detect
+
+info:
+  name: Fortinet VPN (FortiGate) - Precision V5 (Gold Edition)
+  author: Miguel y Juan
+  severity: info
+  description: >
+    Detección de alta fidelidad para VPN FortiGate.
+    Utiliza firmas exclusivas de FortiOS (Cookies SVPN, App-ID de iOS y diccionario fgt_lang).
+    Inmune a falsos positivos (TrustPortal/Liferay) y evade honeypots básicos.
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/remote/login"
+      - "{{BaseURL}}/remote/login?lang=en"
+
+    redirects: true
+    max-redirects: 2
+
+    matchers-condition: or
+    matchers:
+      # --- FIRMA 1: APP ID de FortiClient en Apple Store ---
+      - type: word
+        name: fortinet_appid
+        part: body
+        words:
+          - 'app-id=1475674905'
+
+      # --- FIRMA 2: Cookies y Rutas exclusivas de Fortinet ---
+      - type: dsl
+        name: fortinet_core_fingerprint
+        dsl:
+          - "contains(header, 'SVPNCOOKIE') || contains(header, 'SVPNNETWORKCOOKIE')"
+          - "contains(body, 'fgt_lang') && contains(body, 'sslvpn_portal')"
+        condition: and
+
+  # --- ESTRATEGIA 3: ANTI-HONEYPOT (Endpoint Dinámico) ---
+  # Si el login principal falla o está ofuscado, atacamos al diccionario directamente
+  - method: GET
+    path:
+      - "{{BaseURL}}/remote/fgt_lang?lang=en"
+
+    matchers-condition: and
+    matchers:
+      - type: status
+        status: [200]
+
+      - type: word
+        name: fortinet_lang_dict
+        part: body
+        words:
+          - 'var fgt_lang ='
+          - 'FortiGate'
+          - 'FortiGuard'
+        condition: and
+
+    extractors:
+      # Intenta extraer la versión de FortiOS si está expuesta en el diccionario
+      - type: regex
+        name: maybe_version
+        part: body
+        group: 1
+        regex:
+          - 'FortiOS v([0-9.]+)'
