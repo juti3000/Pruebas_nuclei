@@ -1,0 +1,178 @@
+id: citrix-smart-detect
+
+info:
+  name: Citrix NetScaler Gateway - Advanced Detection & Versioning
+  author: Miguel y  Juan
+  severity: info
+  description: >
+    Detección validada para entorno Telefónica.
+    Incluye lógica Wappalyzer, checks específicos de arquitectura y extracción forense.
+
+    ### GUÍA DE INTERPRETACIÓN DE RESULTADOS PARA ANALISTAS:
+
+    1. [build_date] (Fecha de compilación):
+       - 2023 - 2026: RIESGO BAJO. Sistema activamente mantenido y parcheado.
+       - 2020 - 2022: RIESGO ALTO. Revisar CVE-2023-3519 y CVE-2023-4966 (Citrix Bleed).
+       - 2019 o anterior: RIESGO CRÍTICO. Sistema obsoleto ("Legacy"). Muy probablemente vulnerable a RCE (CVE-2019-19781).
+
+    2. [branding] (Marca visible):
+       - "Citrix Gateway": Versión moderna (v12.1+ o v13/v14).
+       - "NetScaler Gateway": Versión antigua/Legacy (v10/v11). Indica obsolescencia.
+
+http:
+  # -------------------------------------------------------------------------
+  # BLOQUE 1: GET MAESTRO + EXTRACCIÓN DE VERSIÓN
+  # Petición principal para detectar y extraer metadatos.
+  # -------------------------------------------------------------------------
+  - method: GET
+    path:
+      - '{{BaseURL}}'
+      - '{{BaseURL}}/logon/LogonPoint/tmindex.html' #checked
+      - '{{BaseURL}}/logon/LogonPoint/custom/strings.en.json' #checked
+      - '{{BaseURL}}/Citrix/StoreWeb/' #checked
+      - '{{BaseURL}}/Citrix/StoreWeb/ExplicitAuth/Login'
+      - '{{BaseURL}}/nf/res/js/ctxs.core.min.js' #checked (CLAVE PARA FECHA)
+      - '{{BaseURL}}/nf/auth/getECdetails' #checked
+      - '{{BaseURL}}/cgi/Resources/List' #checked
+
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+
+      - type: regex
+        part: body
+        regex:
+          - "_ctxstxt_[a-zA-Z0-9]+" #checked
+          - "_ctxsattr_[a-zA-Z0-9]+" #checked
+          - 'receiver.*\.appcache' #checked
+          - '\{\"encrypt\":' #checked
+          - 'window\.CTXSHTML_GLOBALS' #checked
+
+    extractors:
+      # [1] FECHA DE COMPILACIÓN (build_date)
+      # INTERPRETACIÓN:
+      # - Si la fecha es reciente (últimos 12-18 meses) -> Sistema SEGURO.
+      # - Si la fecha es > 2 años -> Requiere revisión de parches de seguridad.
+      # - Si la fecha es > 4 años -> Sistema CRÍTICO/VULNERABLE.
+      - type: regex
+        name: build_date
+        part: header
+        group: 1
+        regex:
+          - '(?i)Last-Modified: (.*)'
+
+      # [2] AÑO COPYRIGHT (copyright_year)
+      # INTERPRETACIÓN: Ayuda a confirmar la obsolescencia si el build_date no está disponible.
+      # - < 2020: Indica versión de firmware antigua.
+      - type: regex
+        name: copyright_year
+        part: body
+        group: 1
+        regex:
+          - 'Copyright.*200\d-([2][0-9]{3}).*Citrix'
+
+      # [3] BRANDING (branding)
+      # INTERPRETACIÓN:
+      # - "NetScaler Gateway": Interfaz clásica. Sugiere versión v11/v12. (Riesgo Medio/Alto).
+      # - "Citrix Gateway": Interfaz moderna. Sugiere versión v13/v14. (Riesgo Bajo si está actualizado).
+      - type: regex
+        name: branding
+        part: body
+        group: 1
+        regex:
+          - '<title>(.*)</title>'
+
+  # -------------------------------------------------------------------------
+  # BLOQUE 2: GET HEADERS (Detección por Huella de Infraestructura)
+  # Busca cabeceras específicas de la arquitectura de Telefónica y globales.
+  # -------------------------------------------------------------------------
+  - method: GET
+    path:
+      - '{{BaseURL}}'
+      - '{{BaseURL}}/logon/LogonPoint/tmindex.html' #checked
+
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+
+      - type: word
+        part: header
+        words:
+          # --- TUS MATCHERS ORIGINALES ---
+          - 'Citrix-TransactionId' #checked
+          - 'com.citrix.nsgclient://' #checked
+          - 'citrixng://' #checked
+          - 'com.citrix.agmacepa://' #checked
+          - 'nsgcepa://' #checked
+          - '/nscsp_violation/report_uri' #checked
+          - 'NS-CACHE-' #checked
+          - 'application/vnd.citrix' #checked
+          - 'X-StoreFront-' #checked (Critical Telefonica)
+
+          # --- AÑADIDOS DE WAPPALYZER / GOLD STANDARD ---
+          - 'NSC_'    # Cookie clásica de sesión NetScaler (Indicio 100% fiable)
+          - 'ns_af'   # Cookie de afinidad (Wappalyzer)
+          - 'pwcount' # Cookie de conteo de intentos
+        condition: or
+
+  # -------------------------------------------------------------------------
+  # BLOQUE 3: POST BODY CHECKS (Firmas en respuestas a POST)
+  # -------------------------------------------------------------------------
+  - method: POST
+    path:
+      - '{{BaseURL}}/nf/auth/getAuthenticationRequirements.do' #checked
+      - '{{BaseURL}}/logon/LogonPoint/Home/Configuration' #checked
+      - '{{BaseURL}}/cgi/GetAuthMethods' #checked
+      - '{{BaseURL}}/Citrix/StoreWeb/Authentication/GetUserDetails' #checked
+      - '{{BaseURL}}/Citrix/StoreWeb/ExplicitAuth/Login' #checked
+
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+
+      - type: word
+        part: body
+        words:
+          - 'nsg-login-label' #checked
+          - 'nsg_confirmation' #checked
+          - 'ns-gateway' #checked
+          - 'nsg-setclient' #checked
+          - '<clientSettings>' #checked
+          - '{"unauthorized": true}' #checked
+          - 'CitrixWebReceiver-Authenticate' #checked
+          - '<AuthenticateResponse' #checked
+        condition: or
+
+  # -------------------------------------------------------------------------
+  # BLOQUE 4: POST JSON AUTH (Check específico de API)
+  # -------------------------------------------------------------------------
+  - method: POST
+    path:
+      - '{{BaseURL}}/logon/LogonPoint/Resources/List' #checked
+    body: "format=json&resourceDetails=Default" #checked
+    headers:
+      X-Requested-With: XMLHttpRequest
+      X-Citrix-Isusinghttps: Yes
+      Content-Type: application/x-www-form-urlencoded; charset=UTF-8
+
+    matchers-condition: and
+    matchers:
+      - type: status
+        status:
+          - 200
+      - type: word
+        part: header
+        words:
+          - 'X-Citrix-Application: Receiver for Web' #checked
+          - 'CitrixWebReceiver-Authenticate' #checked
+        condition: or
+      - type: word
+        part: body
+        words:
+          - '{"unauthorized": true}' #checked
