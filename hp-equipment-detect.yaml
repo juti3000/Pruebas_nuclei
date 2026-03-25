@@ -1,0 +1,83 @@
+id: hp-equipment-detect
+
+info:
+  name: HP / HPE Equipment Admin Panel Detect (iLO, ProCurve, JetDirect)
+  author: Ramón y Juan
+  severity: info
+  description: Detecta interfaces web de administración de equipos Hewlett-Packard (HP/HPE), incluyendo las versiones modernas y sigilosas de iLO 5.
+  metadata:
+    max-request: 2
+  tags: panel,hp,hpe,ilo,procurve,network
+
+http:
+  - method: GET
+    path:
+      - "{{BaseURL}}/"
+      # Ruta específica donde iLO 5 moderno esconde el portal de login
+      - "{{BaseURL}}/html/login.html"
+
+    stop-at-first-match: true
+    redirects: true
+    max-redirects: 2
+
+    matchers-condition: or
+    matchers:
+      # MATCH 1: Cabecera Server (Firmas clásicas para equipos antiguos)
+      - type: regex
+        name: hp-server-header
+        part: header
+        regex:
+          - '(?i)Server:\s*.*(?:HP HTTP|ProCurve|Compaq-HTTPS|HP-iLO|Hewlett-Packard|HPE)'
+
+      # MATCH 2: Detección por Autenticación Básica (Switches y JetDirect)
+      - type: dsl
+        name: hp-basic-auth
+        dsl:
+          - 'status_code == 401 && contains(tolower(header), "realm=") && (contains(tolower(header), "hp procurve") || contains(tolower(header), "jetdirect") || contains(tolower(header), "hp ilo") || contains(tolower(header), "hewlett-packard"))'
+
+      # MATCH 3: Detección por Títulos HTML 
+      - type: regex
+        name: hp-html-title
+        part: body
+        regex:
+          - '(?i)<title>[^<]*(?:HP Integrated Lights-Out|HP ProCurve|HPE iLO|HP Jetdirect)[^<]*</title>'
+
+      # MATCH 4: Detección profunda (iLO 5 Sigiloso que oculta cabeceras y títulos)
+      - type: regex
+        name: hp-ilo-stealth
+        part: body
+        regex:
+          - '(?i)(?:Hewlett Packard Enterprise Development|src=[\"''\.\/]*js/iLO\.js|id=titleHeading>iLO)'
+
+    # Extractor 1: Saca el banner exacto del servidor desde las cabeceras.
+    extractors:
+      - type: regex
+        name: server_banner
+        part: header
+        group: 1
+        regex:
+          - '(?i)Server:\s*([^\r\n]*(?:HP|ProCurve|Compaq|iLO)[^\r\n]*)'
+
+    # Extractor 2: Saca el modelo exacto cuando el equipo pide contraseña por ventana emergente (Basic Auth).
+      - type: regex
+        name: realm_model
+        part: header
+        group: 1
+        regex:
+          - '(?i)realm="([^"]*(?:HP|ProCurve|JetDirect|iLO)[^"]*)"'
+
+    # Extractor 3: Saca la versión del panel web leyendo la pestaña del navegador (etiqueta <title>).
+      - type: regex
+        name: html_version
+        part: body
+        group: 1
+        regex:
+          - '(?i)<title>\s*([^<]*(?:HP Integrated Lights-Out|HP ProCurve|HPE iLO)[^<]*)\s*</title>'
+
+      # Extractor 4: Saca la versión exacta oculta en el HTML de iLO modernos
+      - type: regex
+        name: ilo_stealth_version
+        part: body
+        group: 1
+        regex:
+          - '(?i)id=titleHeading>(iLO\s*\d+)<'
